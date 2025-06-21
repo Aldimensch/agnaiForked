@@ -40,6 +40,8 @@ export type CustomUI = {
   chatTextColor: string
   chatEmphasisColor: string
   chatQuoteColor: string
+  chatQuoteEmphasisColor: string
+  chatQuoteEmphasisWeight: string
 }
 
 export type MessageOption = 'edit' | 'regen' | 'trash' | 'fork' | 'prompt' | 'schema-regen'
@@ -86,6 +88,8 @@ const customUiGuard = {
   chatTextColor: 'string',
   chatEmphasisColor: 'string',
   chatQuoteColor: 'string',
+  chatQuoteEmphasisColor: 'string',
+  chatQuoteEmphasisWeight: 'string',
 } as const
 
 export const uiGuard = {
@@ -135,6 +139,8 @@ export const defaultUIsettings: UISettings = {
     chatTextColor: '--text-800',
     chatEmphasisColor: '--text-600',
     chatQuoteColor: '--text-800',
+    chatQuoteEmphasisColor: '--text-800',
+    chatQuoteEmphasisWeight: 'unset',
   },
 
   dark: {
@@ -143,6 +149,8 @@ export const defaultUIsettings: UISettings = {
     chatTextColor: '--text-800',
     chatEmphasisColor: '--text-600',
     chatQuoteColor: '--text-800',
+    chatQuoteEmphasisColor: '--text-800',
+    chatQuoteEmphasisWeight: 'unset',    
   },
 
   msgOptsInline: {
