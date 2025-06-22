@@ -363,7 +363,10 @@ const UISettings: Component<{}> = () => {
         label="Chat Quote Emphasis Color"
         fieldName="chatQuoteEmphasisColor"
         helperText={
-          <span class="link" onClick={() => userStore.saveCustomUI({ chatQuoteEmphasisColor: 'text-800' })}>
+          <span
+            class="link"
+            onClick={() => userStore.saveCustomUI({ chatQuoteEmphasisColor: 'text-800' })}
+          >
             Reset to Default
           </span>
         }
@@ -371,7 +374,7 @@ const UISettings: Component<{}> = () => {
         onChange={(color) => userStore.saveCustomUI({ chatQuoteEmphasisColor: color })}
         value={state.current.chatQuoteEmphasisColor || '--text-800'}
       />
-      
+
       <Select
         fieldName="chatQuoteEmphasisWeight"
         label="Chat quote emphasis bold"
@@ -380,8 +383,9 @@ const UISettings: Component<{}> = () => {
           { label: 'None', value: 'unset' },
           { label: 'Bold', value: 'bold' },
         ]}
-        
-        onChange={(item) => userStore.saveCustomUI({ chatQuoteEmphasisWeight: item.value as string })}
+        onChange={(item) =>
+          userStore.saveCustomUI({ chatQuoteEmphasisWeight: item.value as string })
+        }
         value={state.current.chatQuoteEmphasisWeight || 'unset'}
       />
 
