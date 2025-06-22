@@ -9,6 +9,9 @@ import { v4 } from 'uuid'
 type Section = 'pre_system' | 'system' | 'post_system' | 'history' | 'post'
 
 let DEBUG = false
+const SAMPLE_CHAT_LP = `__lp_sample_chat__`
+
+type InternalFlags = { sample_chat?: boolean; pre_render?: boolean; is_final?: boolean }
 
 export type TemplateOpts = {
   continue?: boolean
@@ -16,7 +19,6 @@ export type TemplateOpts = {
   chat: AppSchema.Chat
 
   isPart?: boolean
-  isFinal?: boolean
 
   char: AppSchema.Character
   replyAs?: AppSchema.Character
@@ -76,7 +78,16 @@ function loadParser() {
 
 const HISTORY_MARKER = '__history__marker__'
 
-type PNode = PlaceHolder | ConditionNode | IteratorNode | InsertNode | LowPriorityNode | string
+type PNode =
+  | SystemNode
+  | PlaceHolder
+  | ConditionNode
+  | IteratorNode
+  | InsertNode
+  | LowPriorityNode
+  | string
+
+type SystemNode = { kind: 'system-block'; value: string }
 
 type PlaceHolder = {
   kind: 'placeholder'
@@ -189,6 +200,8 @@ export async function parseTemplate(
     opts.limit.output = {}
   }
 
+  const flags: InternalFlags = { pre_render: true }
+
   const sections: TemplateOpts['sections'] = {
     flags: {},
     strictSystem: [],
@@ -206,19 +219,20 @@ export async function parseTemplate(
 
   if (parts.systemPrompt) {
     opts.isPart = true
-    parts.systemPrompt = render(parts.systemPrompt, opts)
+    parts.systemPrompt = render(parts.systemPrompt, opts, flags)
     opts.isPart = false
   }
 
   if (parts.ujb) {
     opts.isPart = true
-    parts.ujb = render(parts.ujb, opts)
+    parts.ujb = render(parts.ujb, opts, flags)
     opts.isPart = false
   }
 
+  flags.pre_render = false
   const ast = parser.parse(template, {}) as PNode[]
-  readInserts(opts, ast)
-  let output = render(template, opts, ast)
+  readInserts(opts, ast, flags)
+  let output = render(template, opts, flags, ast)
   opts.sections.done = true
   let unusedTokens = 0
   let linesAddedCount = 0
@@ -236,9 +250,9 @@ export async function parseTemplate(
   /**
    * Some placeholders require re-parsing as they also contain placeholders
    */
-  opts.isFinal = true
-  const result = render(output, opts).replace(/\r\n/g, '\n').replace(/\n\n+/g, '\n\n').trim()
-  opts.isFinal = false
+  flags.is_final = true
+  const result = render(output, opts, flags).replace(/\r\n/g, '\n').replace(/\n\n+/g, '\n\n').trim()
+  flags.is_final = false
 
   /** Replace iterators */
   let history: string[] = []
@@ -305,8 +319,14 @@ export async function parseTemplate(
     }
   }
 
-  opts.isFinal = true
-  output = render(output, opts).replace(/\r\n/g, '\n').replace(/\n\n+/g, '\n\n').trim()
+  flags.is_final = true
+  output = render(output, opts, flags).replace(/\r\n/g, '\n').replace(/\n\n+/g, '\n\n').trim()
+
+  if (opts.lowpriority) {
+    for (const key of Object.keys(opts.lowpriority)) {
+      output.replace(key, '')
+    }
+  }
 
   sections.sections.history = history
 
@@ -339,7 +359,7 @@ export async function parseTemplate(
   }
 }
 
-function readInserts(opts: TemplateOpts, ast: PNode[]): void {
+function readInserts(opts: TemplateOpts, ast: PNode[], flags: InternalFlags): void {
   if (opts.inserts) return
 
   const inserts = ast.filter(
@@ -355,14 +375,14 @@ function readInserts(opts: TemplateOpts, ast: PNode[]): void {
     const prev = opts.inserts.get(insert.values)
     // If multiple inserts are in the same depth, we want to combine them
     const prefix = prev ? `${prev}\n` : ''
-    const text = prefix + renderNodes(insert.children, opts)
+    const text = prefix + renderNodes(insert.children, opts, flags)
     if (text) {
       opts.inserts.set(insert.values, text)
     }
   }
 }
 
-function render(template: string, opts: TemplateOpts, existingAst?: PNode[]) {
+function render(template: string, opts: TemplateOpts, flags: InternalFlags, existingAst?: PNode[]) {
   try {
     const orig = existingAst ?? (parser.parse(template, {}) as PNode[])
     const ast: PNode[] = []
@@ -401,7 +421,7 @@ function render(template: string, opts: TemplateOpts, existingAst?: PNode[]) {
     for (let i = 0; i < ast.length; i++) {
       const parent = ast[i]
 
-      const result = renderNode(parent, opts)
+      const result = renderNode(parent, opts, flags)
 
       const marker = getMarker(opts, parent, prevMarker)
 
@@ -415,7 +435,7 @@ function render(template: string, opts: TemplateOpts, existingAst?: PNode[]) {
       }
 
       if (!opts.sections?.done) {
-        fillSection(opts, prevMarker, result)
+        fillSection(opts, prevMarker, flags, result)
       }
 
       if (result) {
@@ -429,38 +449,44 @@ function render(template: string, opts: TemplateOpts, existingAst?: PNode[]) {
   }
 }
 
-function renderNodes(nodes: PNode[], opts: TemplateOpts) {
+function renderNodes(nodes: PNode[], opts: TemplateOpts, flags: InternalFlags) {
   const output: string[] = []
   for (const node of nodes) {
-    const text = renderNode(node, opts)
+    const text = renderNode(node, opts, flags)
     if (text) output.push(text)
   }
   return output.join('')
 }
 
-function renderNode(node: PNode, opts: TemplateOpts, conditionText?: string) {
+function renderNode(node: PNode, opts: TemplateOpts, flags: InternalFlags, conditionText?: string) {
   if (typeof node === 'string') {
     return node
   }
 
   switch (node.kind) {
+    case 'system-block': {
+      const subAst = parser.parse(node.value)
+      const result = renderNodes(subAst, opts, flags)
+      return `<system>${result}</system>`
+    }
+
     case 'placeholder': {
-      const result = getPlaceholder(node, opts, conditionText)
+      const result = getPlaceholder(node, opts, flags, conditionText)
       return result
     }
 
     case 'each': {
-      const result = renderIterator(node.value, node.children, opts)
+      const result = renderIterator(node.value, node.children, opts, flags)
       return result
     }
 
     case 'if': {
-      const result = renderCondition(node, node.children, opts)
+      const result = renderCondition(node, node.children, opts, flags)
       return result
     }
 
     case 'lowpriority': {
-      const result = renderLowPriority(node, opts)
+      const result = renderLowPriority(node, opts, flags)
       return result
     }
   }
@@ -476,10 +502,10 @@ function renderNode(node: PNode, opts: TemplateOpts, conditionText?: string) {
  * This somewhat  grungy string manipulation but unavoidable with the way prompt
  * segments get turned into strings at the same time as their tokens are counted.
  */
-function renderLowPriority(node: LowPriorityNode, opts: TemplateOpts) {
+function renderLowPriority(node: LowPriorityNode, opts: TemplateOpts, flags: InternalFlags) {
   const output: string[] = []
   for (const child of node.children) {
-    const result = renderNode(child, opts)
+    const result = renderNode(child, opts, flags)
     if (result) output.push(result)
   }
 
@@ -489,7 +515,13 @@ function renderLowPriority(node: LowPriorityNode, opts: TemplateOpts) {
   return lowpriorityBlockId
 }
 
-function renderProp(node: CNode, opts: TemplateOpts, entity: unknown, idx: number) {
+function renderProp(
+  node: CNode,
+  opts: TemplateOpts,
+  flags: InternalFlags,
+  entity: unknown,
+  idx: number
+) {
   if (typeof node === 'string') return node
 
   switch (node.kind) {
@@ -501,7 +533,7 @@ function renderProp(node: CNode, opts: TemplateOpts, entity: unknown, idx: numbe
         case 'random':
         case 'roll':
         case 'idle_duration':
-          return getPlaceholder(node, opts)
+          return getPlaceholder(node, opts, flags)
 
         default:
           return
@@ -585,9 +617,14 @@ function renderProp(node: CNode, opts: TemplateOpts, entity: unknown, idx: numbe
 function renderCondition(
   node: ConditionNode,
   children: ConditionNode['children'],
-  opts: TemplateOpts
+  opts: TemplateOpts,
+  flags: InternalFlags
 ) {
   if (opts.repeatable) return ''
+
+  if (node.value === 'example_dialogue') {
+    flags.sample_chat = true
+  }
 
   const elseblock = children
     .filter((ch) => typeof ch !== 'string' && ch.kind === 'else')
@@ -595,24 +632,25 @@ function renderCondition(
 
   const elseOutput: string[] = []
   for (const block of elseblock?.children || []) {
-    const result = renderNode(block, opts)
+    const result = renderNode(block, opts, flags)
     if (result) elseOutput.push(result)
   }
 
-  const value = getPlaceholder(node, opts)
-  if (!value) {
-    if (elseOutput.length) {
-      return elseOutput.join('')
-    }
-    return
+  let value = getPlaceholder(node, opts, flags)
+  if (!value && elseOutput.length) {
+    value = elseOutput.join('')
   }
 
+  // If the condition's placeholder and else-block is empty: return nothing
+  if (!value?.trim()) return
+
   const output: string[] = []
+
   for (const child of children) {
     if (typeof child !== 'string' && child.kind === 'else') continue
     const isPart = opts.isPart
     opts.isPart = false
-    const result = renderNode(child, opts, value)
+    const result = renderNode(child, opts, flags, value)
     opts.isPart = isPart
     if (result) output.push(result)
   }
@@ -622,7 +660,10 @@ function renderCondition(
     if (!sample) {
       return
     }
-    return renderLowPriority({ kind: 'lowpriority', children: [output.join('')] }, opts)
+
+    opts.lowpriority ??= []
+    opts.lowpriority.push({ id: SAMPLE_CHAT_LP, content: output.join('') })
+    return SAMPLE_CHAT_LP
   }
 
   return output.join('')
@@ -651,7 +692,12 @@ function getEntities(holder: IterableHolder, opts: TemplateOpts) {
   }
 }
 
-function renderIterator(holder: IterableHolder, children: CNode[], opts: TemplateOpts) {
+function renderIterator(
+  holder: IterableHolder,
+  children: CNode[],
+  opts: TemplateOpts,
+  flags: InternalFlags
+) {
   if (opts.repeatable) return ''
   let isHistory = holder === 'history'
   let isChatEmbed = holder === 'chat_embed'
@@ -672,15 +718,15 @@ function renderIterator(holder: IterableHolder, children: CNode[], opts: Templat
 
       switch (child.kind) {
         case 'if': {
-          const condition = getPlaceholder(child, opts)
+          const condition = getPlaceholder(child, opts, flags)
           if (!condition) break
 
-          const result = renderNode(child, opts)
+          const result = renderNode(child, opts, flags)
           if (result) curr += result
           break
         }
         case 'placeholder': {
-          const result = renderNode(child, opts)
+          const result = renderNode(child, opts, flags)
           if (result) curr += result
           break
         }
@@ -688,16 +734,16 @@ function renderIterator(holder: IterableHolder, children: CNode[], opts: Templat
         case 'bot-prop':
         case 'chat-embed-prop':
         case 'history-prop': {
-          const result = renderProp(child, opts, entity, idx)
+          const result = renderProp(child, opts, flags, entity, idx)
           if (result) curr += result
           break
         }
 
         case 'bot-if':
         case 'history-if': {
-          const prop = renderProp(child, opts, entity, idx)
+          const prop = renderProp(child, opts, flags, entity, idx)
           if (!prop) break
-          const result = renderEntityCondition(child.children, opts, entity, idx)
+          const result = renderEntityCondition(child.children, opts, flags, entity, idx)
           curr += result
           break
         }
@@ -719,11 +765,17 @@ function renderIterator(holder: IterableHolder, children: CNode[], opts: Templat
   return isHistory || isChatEmbed ? output.join('\n') : output.join('')
 }
 
-function renderEntityCondition(nodes: CNode[], opts: TemplateOpts, entity: unknown, idx: number) {
+function renderEntityCondition(
+  nodes: CNode[],
+  opts: TemplateOpts,
+  flags: InternalFlags,
+  entity: unknown,
+  idx: number
+) {
   let result = ''
 
   for (const node of nodes) {
-    const res = renderProp(node, opts, entity, idx)
+    const res = renderProp(node, opts, flags, entity, idx)
     if (res) result += res.toString()
   }
 
@@ -733,6 +785,7 @@ function renderEntityCondition(nodes: CNode[], opts: TemplateOpts, entity: unkno
 function getPlaceholder(
   node: PlaceHolder | ConditionNode,
   opts: TemplateOpts,
+  flags: InternalFlags,
   conditionText?: string
 ) {
   if (opts.repeatable && !repeatableHolders.has(node.value as any)) return ''
@@ -746,7 +799,7 @@ function getPlaceholder(
     return `{{${node.value}}}`
   }
 
-  if (opts.isFinal && FINAL_IGNORE_HOLDERS[node.value]) {
+  if (flags.is_final && FINAL_IGNORE_HOLDERS[node.value]) {
     return `{{${node.value}}}`
   }
 
@@ -762,8 +815,15 @@ function getPlaceholder(
 
     case 'example_dialogue': {
       const text = opts.parts?.sampleChat?.join('\n') || ''
-      const result = renderLowPriority({ kind: 'lowpriority', children: [text] }, opts)
-      return result
+
+      if (!flags.sample_chat) {
+        flags.sample_chat = true
+        opts.lowpriority ??= []
+        opts.lowpriority.push({ id: '??' + SAMPLE_CHAT_LP, content: text })
+        return SAMPLE_CHAT_LP
+      }
+
+      return text
     }
 
     case 'scenario':
@@ -881,7 +941,13 @@ function handleDice(node: DiceExpr) {
   return rand
 }
 
-function fillSection(opts: TemplateOpts, marker: Section | undefined, result: string | undefined) {
+function fillSection(
+  opts: TemplateOpts,
+  marker: Section | undefined,
+  interal: InternalFlags,
+  result: string | undefined
+) {
+  if (interal.pre_render) return
   if (!opts.sections) return
   if (!result) return
   if (result === HISTORY_MARKER) return
@@ -928,6 +994,10 @@ function getMarker(opts: TemplateOpts, node: PNode, previous: Section): Section 
   }
 
   switch (node.kind) {
+    case 'system-block': {
+      return 'system'
+    }
+
     case 'placeholder': {
       if (node.value === 'history') return 'history'
       if (node.value === 'system_prompt') return 'system'

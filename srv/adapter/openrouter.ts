@@ -7,12 +7,9 @@ import { AppLog } from '../middleware'
 import { OpenRouterModel } from '/common/adapters'
 import { getStoppingStrings } from './prompt'
 import { createClaudeChatCompletion } from './claude'
-import {
-  validateChatMessagesWithImage,
-  logPayload,
-  stripImageContent,
-} from './template-chat-payload'
+import { logPayload, stripImageContent } from './template-chat-payload'
 import { streamGenerator } from '/common/requests/stream'
+import { getJsonSchemaPayload } from '/common/guidance/json-schema'
 
 const baseUrl = 'https://openrouter.ai/api/v1'
 const chatUrl = `${baseUrl}/chat/completions`
@@ -64,6 +61,10 @@ export const handleOpenRouter: ModelAdapter = async function* (opts) {
     payload.model = opts.gen.openRouterModel.id
   }
 
+  if (opts.gen.jsonEnabled && opts.jsonSchema) {
+    payload.response_format = getJsonSchemaPayload(opts.jsonSchema, 'openai', opts)
+  }
+
   const useAnthropic =
     opts.gen.service !== 'openrouter-completion' &&
     (opts.gen.openRouterModel?.id || '').startsWith('anthropic')
@@ -78,10 +79,6 @@ export const handleOpenRouter: ModelAdapter = async function* (opts) {
     payload.messages = opts.messages
   } else {
     payload.prompt = opts.prompt
-  }
-
-  if (payload.messages) {
-    payload.messages = validateChatMessagesWithImage(opts, payload.messages)
   }
 
   yield {
@@ -109,6 +106,7 @@ export const handleOpenRouter: ModelAdapter = async function* (opts) {
     : getCompletion(opts.signal, payload, headers)
 
   let accum = ''
+  let fullText: string | undefined
   let response: any
 
   logPayload(opts.log, payload)
@@ -131,13 +129,17 @@ export const handleOpenRouter: ModelAdapter = async function* (opts) {
         partial: sanitiseAndTrim(accum, opts.prompt, opts.replyAs, opts.characters, opts.members),
       }
     }
+
+    if (typeof gen.value === 'string') {
+      fullText = gen.value
+    }
   }
 
   if (response && 'model' in response) {
     yield { meta: { model: response.model, provider: response.provider, ...response.usage } }
   }
 
-  const text = getResponseText(response, opts.log)
+  const text = fullText === undefined ? getResponseText(response, opts.log) : fullText
   if (text instanceof Error) {
     yield { error: `OpenRouter response failed: ${text.message}` }
     return
